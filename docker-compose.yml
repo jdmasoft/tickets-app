@@ -14,7 +14,10 @@ services:
       - "traefik.http.services.tickets.loadbalancer.server.port=3000"
     networks:
       - dokploy-network
+      - pdfia-pdf-lwmcod_ia-api-network
 
 networks:
   dokploy-network:
+    external: true
+  pdfia-pdf-lwmcod_ia-api-network:
     external: true
