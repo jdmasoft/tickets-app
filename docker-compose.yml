@@ -1,0 +1,20 @@
+services:
+  web:
+    build: .
+    container_name: tickets-web
+    restart: always
+    environment:
+      - NODE_ENV=production
+      - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.tickets.rule=Host(`tickets.jdmasoft.com`)"
+      - "traefik.http.routers.tickets.entrypoints=websecure"
+      - "traefik.http.routers.tickets.tls.certresolver=letsencrypt"
+      - "traefik.http.services.tickets.loadbalancer.server.port=3000"
+    networks:
+      - dokploy-network
+
+networks:
+  dokploy-network:
+    external: true
