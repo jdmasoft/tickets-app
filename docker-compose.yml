@@ -12,6 +12,8 @@ services:
       - "traefik.http.routers.tickets.entrypoints=websecure"
       - "traefik.http.routers.tickets.tls.certresolver=letsencrypt"
       - "traefik.http.services.tickets.loadbalancer.server.port=3000"
+    ports:
+      - "127.0.0.1:3003:3000"
     networks:
       - dokploy-network
       - pdfia-pdf-lwmcod_ia-api-network
