@@ -6,6 +6,7 @@ services:
     environment:
       - NODE_ENV=production
       - MINIMAX_API_KEY=${MINIMAX_API_KEY:-}
+      - PYTHON_OCR_URL=http://tickets-ocr:8001
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.tickets.rule=Host(`tickets.jdmasoft.com`)"
@@ -16,10 +17,23 @@ services:
       - "127.0.0.1:3003:3000"
     networks:
       - dokploy-network
-      - pdfia-pdf-lwmcod_ia-api-network
+
+  ocr:
+    image: python:3.11-slim
+    container_name: tickets-ocr
+    restart: always
+    working_dir: /app
+    command: bash -c "pip install -r requirements.txt && python main.py"
+    volumes:
+      - ./ocr-service:/app
+    networks:
+      - dokploy-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 networks:
   dokploy-network:
-    external: true
-  pdfia-pdf-lwmcod_ia-api-network:
     external: true
