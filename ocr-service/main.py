@@ -28,22 +28,35 @@ def array_buffer_to_base64(data: bytes) -> str:
 
 
 def parse_amount(text: str) -> float:
-    patterns = [
-        r"TOTAL[:\s]*\$?\s*([\d.,]+)",
-        r"\$\s*([\d,]+)",
-        r"([\d,]{3,})",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            cleaned = match.group(1).replace(",", ".").replace("[", "").replace("]", "")
-            try:
-                val = float(cleaned)
-                if val > 0:
-                    return val
-            except ValueError:
-                pass
-    return 0.0
+    """
+    Handles:
+    - $1.234,56 (argentinian format)
+    - $1,234.56 (US format)
+    - 1234.56 (plain)
+    """
+    best = 0.0
+    # Pattern: optional $, digits possibly separated by . or ,, then decimal part
+    # US format: $1,234.56 or 1234.56
+    us_patterns = re.findall(r'\$?\s*([\d]{1,3}(?:,\d{3})*(?:\.\d{2})?)', text)
+    for m in us_patterns:
+        cleaned = m.replace(',', '').replace(' ', '')
+        try:
+            val = float(cleaned)
+            if val > best:
+                best = val
+        except ValueError:
+            pass
+    # AR format: $1.234,56 or 1.234,56
+    ar_patterns = re.findall(r'\$?\s*([\d]{1,3}(?:\.\d{3})*(?:,\d{2})?)', text)
+    for m in ar_patterns:
+        cleaned = m.replace('.', '').replace(',', '.').replace(' ', '')
+        try:
+            val = float(cleaned)
+            if val > best:
+                best = val
+        except ValueError:
+            pass
+    return best
 
 
 def parse_date(text: str) -> str:
