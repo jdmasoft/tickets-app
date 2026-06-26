@@ -4,13 +4,14 @@ Handles images and PDFs, returns structured ticket data.
 """
 import base64
 import io
-import json
 import re
 import sys
 from datetime import datetime
+from typing import Optional
 
 import fitz  # pymupdf
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import pytesseract
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 import uvicorn
@@ -23,46 +24,74 @@ app.add_middleware(
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
 
 
-def array_buffer_to_base64(data: bytes) -> str:
-    return base64.b64encode(data).decode("utf-8")
-
-
 def parse_amount(text: str) -> float:
-    """
-    Handles:
-    - $1.234,56 (argentinian format)
-    - $1,234.56 (US format)
-    - 1234.56 (plain)
-    """
+    """Extract total amount from receipt text."""
     best = 0.0
-    # Pattern: optional $, digits possibly separated by . or ,, then decimal part
-    # US format: $1,234.56 or 1234.56
-    us_patterns = re.findall(r'\$?\s*([\d]{1,3}(?:,\d{3})*(?:\.\d{2})?)', text)
-    for m in us_patterns:
-        cleaned = m.replace(',', '').replace(' ', '')
+
+    # Priority 1: Look for TOTAL line (most reliable)
+    total_patterns = [
+        r'(?i)TOTAL\s*:?\s*\$?\s*([\d]{1,3}(?:[.,]\d{3})*[.,]\d{2})',
+        r'(?i)TOTAL\s*:?\s*([\d]+[.,]\d{2})',
+    ]
+    for pattern in total_patterns:
+        for m in re.findall(pattern, text):
+            cleaned = m.replace(',', '')
+            try:
+                val = float(cleaned)
+                if val > best:
+                    best = val
+            except ValueError:
+                pass
+
+    # Priority 2: Look for IMPORTE TOTAL or MONTO
+    importe_patterns = [
+        r'(?i)IMPORTE\s*:?\s*\$?\s*([\d]{1,3}(?:[.,]\d{3})*[.,]\d{2})',
+        r'(?i)MONTO\s*:?\s*\$?\s*([\d]{1,3}(?:[.,]\d{3})*[.,]\d{2})',
+    ]
+    for pattern in importe_patterns:
+        for m in re.findall(pattern, text):
+            cleaned = m.replace(',', '')
+            try:
+                val = float(cleaned)
+                if val > best:
+                    best = val
+            except ValueError:
+                pass
+
+    # Priority 3: Currency patterns (skip RUC/NIT lines)
+    lines = text.split('\n')
+    skip_indicators = ['RUC', 'NIT', 'CI:', 'R.U.T', 'DOC', 'NRO', 'CODIGO']
+    for line in lines:
+        if any(s in line.upper() for s in skip_indicators):
+            continue
+        currency_patterns = re.findall(r'\$\s*([\d]{1,3}(?:[.,]\d{3})*[.,]\d{2})', line)
+        for m in currency_patterns:
+            cleaned = m.replace(',', '')
+            try:
+                val = float(cleaned)
+                if val > best:
+                    best = val
+            except ValueError:
+                pass
+
+    # Priority 4: Plain numbers with 2 decimal places
+    plain_patterns = re.findall(r'(?<!\d)([\d]{1,3}(?:[.,]\d{3})*[.,]\d{2})(?!\d)', text)
+    for m in plain_patterns:
+        cleaned = m.replace(',', '')
         try:
             val = float(cleaned)
-            if val > best:
+            if val >= 1.00 and val > best:
                 best = val
         except ValueError:
             pass
-    # AR format: $1.234,56 or 1.234,56
-    ar_patterns = re.findall(r'\$?\s*([\d]{1,3}(?:\.\d{3})*(?:,\d{2})?)', text)
-    for m in ar_patterns:
-        cleaned = m.replace('.', '').replace(',', '.').replace(' ', '')
-        try:
-            val = float(cleaned)
-            if val > best:
-                best = val
-        except ValueError:
-            pass
-    return best
+
+    return round(best, 2)
 
 
 def parse_date(text: str) -> str:
     patterns = [
-        r"(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})",
-        r"(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})",
+        r"(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})",
+        r"(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})",
     ]
     for pattern in patterns:
         match = re.search(pattern, text)
@@ -101,7 +130,7 @@ def pdf_to_images(buffer: bytes) -> list[bytes]:
     try:
         doc = fitz.open(stream=buffer, filetype="pdf")
         for page_num, page in enumerate(doc):
-            mat = fitz.Matrix(2, 2)  # 2x zoom for better quality
+            mat = fitz.Matrix(2, 2)
             pix = page.get_pixmap(matrix=mat)
             img_data = pix.tobytes("png")
             images.append(img_data)
@@ -112,10 +141,33 @@ def pdf_to_images(buffer: bytes) -> list[bytes]:
 
 
 def extract_text_from_image(buffer: bytes) -> str:
-    """Extract text from image using basic heuristics + PIL metadata."""
-    # For now, return empty — we rely on MiniMax for actual OCR of images
-    # This fallback just returns a placeholder
-    return ""
+    """Extract text from image using tesseract OCR."""
+    try:
+        img = Image.open(io.BytesIO(buffer))
+        if img.mode not in ("L", "RGB", "RGBA"):
+            img = img.convert("RGB")
+        try:
+            text = pytesseract.image_to_string(img, lang="spa")
+        except Exception:
+            try:
+                text = pytesseract.image_to_string(img, lang="eng")
+            except Exception as e:
+                print(f"Tesseract error: {e}", file=sys.stderr)
+                return ""
+        return text.strip()
+    except Exception as e:
+        print(f"Image OCR error: {e}", file=sys.stderr)
+        return ""
+
+
+def process_image_data(data: bytes) -> dict:
+    """Common processing for image data."""
+    raw_text = extract_text_from_image(data)
+    return {
+        "date": parse_date(raw_text),
+        "amount": parse_amount(raw_text),
+        "rawText": raw_text,
+    }
 
 
 @app.get("/health")
@@ -125,6 +177,7 @@ async def health():
 
 @app.post("/ocr")
 async def ocr(file: UploadFile = File(...)):
+    """Multipart form upload (file field)."""
     if file.size and file.size > MAX_FILE_SIZE:
         raise HTTPException(status_code=400, detail="File too large (max 20MB)")
 
@@ -133,25 +186,54 @@ async def ocr(file: UploadFile = File(...)):
     is_pdf = mime == "application/pdf" or file.filename.lower().endswith(".pdf")
 
     raw_text = ""
-    images_base64 = []
 
     if is_pdf:
-        # Extract text from PDF
         raw_text = extract_text_from_pdf(data)
-        # Also convert pages to images for vision processing
-        images_base64 = [array_buffer_to_base64(img) for img in pdf_to_images(data)]
     else:
-        images_base64 = [array_buffer_to_base64(data)]
+        raw_text = extract_text_from_image(data)
 
-    result = {
+    return {
         "date": parse_date(raw_text),
         "amount": parse_amount(raw_text),
         "rawText": raw_text,
-        "images": images_base64,  # Send back for MiniMax to process
-        "hasImages": len(images_base64) > 0,
     }
 
-    return result
+
+@app.post("/ocr-json")
+async def ocr_json(payload: dict = Body(...)):
+    """JSON upload with base64 data URL in 'url' field."""
+    data_url = payload.get("url", "")
+    if not data_url:
+        raise HTTPException(status_code=400, detail="No 'url' field provided")
+
+    # Parse data URL: data:image/jpeg;base64,/9j/4AAQ...
+    try:
+        header, b64_data = data_url.split(",", 1)
+        mime = header.split(";")[0].replace("data:", "")
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid data URL format")
+
+    try:
+        data = base64.b64decode(b64_data)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 data")
+
+    if len(data) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="File too large (max 20MB)")
+
+    is_pdf = mime == "application/pdf"
+
+    raw_text = ""
+    if is_pdf:
+        raw_text = extract_text_from_pdf(data)
+    else:
+        raw_text = extract_text_from_image(data)
+
+    return {
+        "date": parse_date(raw_text),
+        "amount": parse_amount(raw_text),
+        "rawText": raw_text,
+    }
 
 
 if __name__ == "__main__":

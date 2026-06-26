@@ -23,6 +23,7 @@ export default function Home() {
     date: string;
     amount: number;
     rawText: string;
+    _rawJson?: object;
   } | null>(null);
   const [confirming, setConfirming] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -50,7 +51,7 @@ export default function Home() {
       // Create preview URL
       const preview = URL.createObjectURL(file);
 
-      setLastResult({ preview, date, amount, rawText });
+      setLastResult({ preview, date, amount, rawText, _rawJson: data });
     } catch (err) {
       setError("No se pudo procesar. Intentá de nuevo.");
     } finally {
@@ -200,6 +201,16 @@ export default function Home() {
                       {lastResult.rawText.length > 300 ? "…" : ""}
                     </p>
                   </div>
+                )}
+                {lastResult._rawJson && (
+                  <details className="mt-2">
+                    <summary className="text-xs text-gray-400 uppercase tracking-wide cursor-pointer hover:text-gray-600">
+                      📄 JSON crudo de la API
+                    </summary>
+                    <pre className="mt-1 text-xs text-green-600 bg-gray-900 rounded-lg p-3 overflow-x-auto whitespace-pre-wrap max-h-40">
+                      {JSON.stringify(lastResult._rawJson, null, 2)}
+                    </pre>
+                  </details>
                 )}
                 <div className="flex gap-2 pt-2">
                   <button
